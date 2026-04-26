@@ -1,0 +1,13 @@
+tensorflow==2.19.1
+flask==3.0.3
+numpy==1.26.4
+pillow==10.3.0
+opencv-python==4.9.0.80
+playwright==1.44.0
+requests==2.32.2
+beautifulsoup4==4.12.3
+seaborn==0.13.2
+matplotlib==3.8.4
+scikit-learn==1.4.2
+gunicorn==22.0.0
+pdf2image==1.17.0

@@ -1,23 +1,24 @@
 import os
-import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from countries import load_classes
+
+ROOT = Path(__file__).resolve().parent.parent
+
 
 def create_structure():
-    base_dirs = ['data/raw', 'data/processed', 'models', 'scripts']
-    for d in base_dirs: os.makedirs(d, exist_ok=True)
+    base_dirs = ["data/raw", "data/processed", "data/inbox", "models", "scripts"]
+    for d in base_dirs:
+        (ROOT / d).mkdir(parents=True, exist_ok=True)
 
-    with open('countries.json', 'r') as f:
-        config = json.load(f)
+    classes = load_classes()
+    for class_name in classes:
+        (ROOT / "data/raw" / class_name).mkdir(parents=True, exist_ok=True)
 
-    all_classes = []
-    for region, clubs in config.items():
-        for club in clubs:
-            class_name = f"{region}_{club}"
-            os.makedirs(os.path.join('data/raw', class_name), exist_ok=True)
-            all_classes.append(class_name)
-            
-    with open('models/classes.json', 'w') as f:
-        json.dump(all_classes, f)
-    print(f"✅ Structure prête : {len(all_classes)} classes.")
+    print(f"Structure prête : {len(classes)} classes.")
+
 
 if __name__ == "__main__":
     create_structure()

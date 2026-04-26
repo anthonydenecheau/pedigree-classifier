@@ -1,5 +1,10 @@
 {
     "USA": ["AKC", "UKC"],
-    "UK": ["KC"],
-    "EUROPE": ["FRANCE_SCC", "GERMANY_VDH", "ITALY_ENCI", "SPAIN_RSCE", "BELGIUM_KMSH", "SWITZERLAND_SCS"]
+    "GBR": ["KC"],
+    "FRA": ["LOF"],
+    "DEU": ["VDH"],
+    "ITA": ["ENCI"],
+    "ESP": ["RSCE"],
+    "BEL": ["KMSH"],
+    "CHE": ["SCS"]
 }

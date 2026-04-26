@@ -1,10 +1,10 @@
 VENV=.venv
 PYTHON=$(VENV)/bin/python
 PIP=$(VENV)/bin/pip
-CONFIG=models/classes.json
+CONFIG=countries.json
 MODEL=models/best_pedigree_model.h5
 
-.PHONY: all init collect preprocess train evaluate serve clean check-data
+.PHONY: all init collect collect-reset preprocess split train evaluate serve label clean clean-venv reinstall check-data
 
 all: init install collect preprocess train evaluate
 
@@ -13,14 +13,18 @@ init-venv:
 	$(PIP) install --upgrade pip
 
 install: init-venv
-	$(PIP) install tensorflow flask numpy pillow opencv-python playwright requests beautifulsoup4 seaborn matplotlib scikit-learn
+	$(PIP) install -r requirements.txt
 	$(VENV)/bin/playwright install chromium
+	@which pdftoppm > /dev/null 2>&1 || (echo "⚠️  poppler-utils manquant (PDF). Installez : sudo apt install poppler-utils" && true)
 
 init:
 	$(PYTHON) scripts/init_project.py
 
 collect:
-	$(PYTHON) scripts/collect_data.py
+	$(PYTHON) scripts/collect_data.py --limit 300
+
+collect-reset:
+	$(PYTHON) scripts/collect_data.py --reset
 
 # Vérifie le nombre d'images par dossier avant de lancer l'entraînement
 check-data:
@@ -33,6 +37,13 @@ check-data:
 preprocess:
 	$(PYTHON) scripts/preprocess.py
 
+# A lancer UNE SEULE FOIS apres le tri manuel, avant le premier training
+split:
+	@if [ -d data/test ] && [ "$$(find data/test -name '*.jpg' | wc -l)" -gt 0 ]; then \
+		echo "data/test/ existe deja. Supprimez-le manuellement pour relancer."; exit 1; \
+	fi
+	$(PYTHON) scripts/split_test_set.py
+
 train:
 	@if [ ! -f $(CONFIG) ]; then make init; fi
 	$(PYTHON) scripts/train.py
@@ -43,8 +54,18 @@ evaluate:
 	$(PYTHON) scripts/evaluate.py
 
 serve:
-	$(PYTHON) scripts/api.py
+	$(VENV)/bin/gunicorn -w 2 -b 0.0.0.0:5000 --preload scripts.api:app
+
+# Interface de labellisation manuelle (http://localhost:5001)
+label:
+	$(PYTHON) scripts/label.py
 
 clean:
 	rm -rf data/processed/*
 	find . -type d -name "__pycache__" -exec rm -rf {} +
+
+clean-venv:
+	rm -rf $(VENV)
+	@echo "Venv supprimé. Relancez : make install"
+
+reinstall: clean-venv install
