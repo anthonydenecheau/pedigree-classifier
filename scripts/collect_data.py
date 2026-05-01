@@ -107,6 +107,18 @@ SEARCH_QUERIES: dict[str, list[str]] = {
         '"Schweizerische Kynologische Gesellschaft" pedigree',
         '"SCS" abstammungsurkunde hund filetype:pdf',
     ],
+    "DOC": [
+        "document scan paper",
+        "invoice receipt scan",
+        "letter official paper",
+        "form administrative document",
+        "certificate diploma scan",
+        "contract paperwork scan",
+        "medical document form",
+        "bank statement document",
+        "tax form paper scan",
+        "ID card passport scan",
+    ],
 }
 
 # URLs directes de pages officialles contenant des PDF ou exemples de documents
@@ -272,6 +284,7 @@ FLICKR_QUERIES: dict[str, str] = {
     "ENCI": "ENCI pedigree documento certificato",
     "RSCE": "RSCE pedigree certificado documento",
     "SCS":  "SKG pedigree Ahnentafel Dokument",
+    "DOC":  "document paper scan official form",
 }
 
 def _scrape_flickr(class_name: str) -> list[str]:

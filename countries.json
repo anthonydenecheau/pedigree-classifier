@@ -6,5 +6,6 @@
     "ITA": ["ENCI"],
     "ESP": ["RSCE"],
     "BEL": ["KMSH"],
-    "CHE": ["SCS"]
+    "CHE": ["SCS"],
+    "OTHER": "DOC"
 }

@@ -11,3 +11,4 @@ matplotlib==3.8.4
 scikit-learn==1.4.2
 gunicorn==22.0.0
 pdf2image==1.17.0
+datasets==2.21.0

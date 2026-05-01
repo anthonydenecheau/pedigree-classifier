@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pedigree Classifier</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; }
+  header { background: #1a1a2e; color: white; padding: 1.2rem 2rem; }
+  header h1 { font-size: 1.4rem; font-weight: 600; }
+  header p { font-size: 0.85rem; opacity: 0.7; margin-top: 2px; }
+  main { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+
+  .drop-zone {
+    border: 2px dashed #aaa;
+    border-radius: 12px;
+    background: white;
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .drop-zone.dragover { border-color: #4f8ef7; background: #eef4ff; }
+  .drop-zone input[type=file] { display: none; }
+  .drop-zone .icon { font-size: 3rem; margin-bottom: 0.8rem; }
+  .drop-zone p { color: #555; font-size: 0.95rem; }
+  .drop-zone p span { color: #4f8ef7; font-weight: 600; }
+
+  #preview-wrap { margin-top: 1.5rem; text-align: center; display: none; }
+  #preview { max-height: 300px; max-width: 100%; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.15); }
+
+  #submit-btn {
+    display: none; width: 100%; margin-top: 1rem;
+    padding: 0.9rem; background: #1a1a2e; color: white;
+    border: none; border-radius: 8px; font-size: 1rem;
+    cursor: pointer; transition: background 0.2s;
+  }
+  #submit-btn:hover { background: #2d2d5a; }
+  #submit-btn:disabled { background: #999; cursor: default; }
+
+  #result { margin-top: 1.5rem; display: none; }
+  .result-card {
+    background: white; border-radius: 12px;
+    padding: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  .result-card h2 { font-size: 1rem; color: #555; margin-bottom: 1rem; }
+
+  .pred-row { margin-bottom: 0.9rem; }
+  .pred-label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 0.9rem; }
+  .pred-label .name { font-weight: 600; }
+  .pred-label .score { color: #555; }
+  .bar-bg { background: #eee; border-radius: 6px; height: 10px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; transition: width 0.6s ease; }
+  .bar-fill.top  { background: #4f8ef7; }
+  .bar-fill.rest { background: #b0c8f7; }
+
+  .badge {
+    display: inline-block; padding: 4px 12px; border-radius: 20px;
+    font-size: 0.8rem; font-weight: 600; margin-bottom: 1rem;
+  }
+  .badge.success { background: #d4edda; color: #155724; }
+  .badge.uncertain { background: #fff3cd; color: #856404; }
+  .badge.error { background: #f8d7da; color: #721c24; }
+
+  .error-msg { color: #721c24; background: #f8d7da; padding: 1rem; border-radius: 8px; }
+  .spinner { text-align: center; padding: 1rem; color: #777; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pedigree Classifier</h1>
+  <p>Classification de certificats pedigree canins par registre d'origine</p>
+</header>
+
+<main>
+  <div class="drop-zone" id="drop-zone">
+    <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp">
+    <div class="icon">📄</div>
+    <p>Déposez une image ici ou <span>parcourez vos fichiers</span></p>
+    <p style="font-size:0.8rem;color:#aaa;margin-top:6px">JPG, PNG, WEBP — 10 Mo max</p>
+  </div>
+
+  <div id="preview-wrap">
+    <img id="preview" src="" alt="Aperçu">
+  </div>
+
+  <button id="submit-btn">Analyser</button>
+
+  <div id="result"></div>
+</main>
+
+<script>
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const previewWrap = document.getElementById('preview-wrap');
+const preview    = document.getElementById('preview');
+const submitBtn  = document.getElementById('submit-btn');
+const resultDiv  = document.getElementById('result');
+
+let selectedFile = null;
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) setFile(file);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+
+function setFile(file) {
+  selectedFile = file;
+  const reader = new FileReader();
+  reader.onload = e => { preview.src = e.target.result; };
+  reader.readAsDataURL(file);
+  previewWrap.style.display = 'block';
+  submitBtn.style.display = 'block';
+  resultDiv.style.display = 'none';
+  resultDiv.innerHTML = '';
+}
+
+submitBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Analyse en cours…';
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = '<div class="spinner">⏳ Prédiction en cours…</div>';
+
+  const form = new FormData();
+  form.append('file', selectedFile);
+
+  try {
+    const resp = await fetch('/predict', { method: 'POST', body: form });
+    const data = await resp.json();
+    renderResult(data);
+  } catch (err) {
+    resultDiv.innerHTML = `<div class="error-msg">Erreur réseau : ${err.message}</div>`;
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Analyser';
+  }
+});
+
+function renderResult(data) {
+  if (data.error) {
+    resultDiv.innerHTML = `<div class="result-card"><div class="error-msg">${data.error}</div></div>`;
+    return;
+  }
+
+  const badgeClass = data.status === 'success' ? 'success' : 'uncertain';
+  const badgeLabel = data.status === 'success' ? '✅ Confiance suffisante' : '⚠️ Confiance insuffisante';
+
+  const barsHtml = data.predictions.map((p, i) => `
+    <div class="pred-row">
+      <div class="pred-label">
+        <span class="name">${p.country}</span>
+        <span class="score">${p.score.toFixed(1)}%</span>
+      </div>
+      <div class="bar-bg">
+        <div class="bar-fill ${i === 0 ? 'top' : 'rest'}" style="width:${p.score}%"></div>
+      </div>
+    </div>
+  `).join('');
+
+  resultDiv.innerHTML = `
+    <div class="result-card">
+      <span class="badge ${badgeClass}">${badgeLabel}</span>
+      <h2>Top 3 des registres détectés</h2>
+      ${barsHtml}
+    </div>`;
+}
+</script>
+</body>
+</html>

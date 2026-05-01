@@ -8,8 +8,7 @@ venv/
 
 # --- Données (Le plus important) ---
 # On ignore les images brutes et traitées car elles sont trop lourdes
-data/raw/
-data/processed/
+data/**
 
 # Si tu veux quand même garder la structure du dossier data sans les fichiers
 # Tu peux ajouter des fichiers .gitkeep dans les sous-dossiers et commenter les lignes ci-dessus

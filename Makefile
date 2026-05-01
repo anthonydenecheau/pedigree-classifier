@@ -2,7 +2,7 @@ VENV=.venv
 PYTHON=$(VENV)/bin/python
 PIP=$(VENV)/bin/pip
 CONFIG=countries.json
-MODEL=models/best_pedigree_model.h5
+MODEL=models/best_pedigree_model.keras
 
 .PHONY: all init collect collect-reset preprocess split train evaluate serve label clean clean-venv reinstall check-data
 
@@ -54,7 +54,7 @@ evaluate:
 	$(PYTHON) scripts/evaluate.py
 
 serve:
-	$(VENV)/bin/gunicorn -w 2 -b 0.0.0.0:5000 --preload scripts.api:app
+	$(VENV)/bin/gunicorn -w 1 -b 0.0.0.0:5000 scripts.api:app
 
 # Interface de labellisation manuelle (http://localhost:5001)
 label:

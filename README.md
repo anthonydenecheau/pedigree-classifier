@@ -13,6 +13,7 @@ init_project.py   →  data/raw/{classe}/   (arborescence par registre)
      │
      ▼
 collect_data.py   →  scraping multi-sources : registres officiels, Flickr CC, Bing, DuckDuckGo
+collect_rvlcdip.py → téléchargement RVL-CDIP (classe négative OTHER_DOC)
      │
      ▼  [Labellisation manuelle via make label]
      │
@@ -49,6 +50,28 @@ Définis dans `countries.json` — ajouter un pays = ajouter une ligne.
 | ESP | RSCE | Real Sociedad Canina de España |
 | BEL | KMSH | Koninklijke Maatschappij Sint-Hubertus |
 | CHE | SCS | Schweizerische Kynologische Gesellschaft |
+
+## Classe négative — OTHER_DOC
+
+Le modèle est entraîné en **classifieur multi-classes** : pour qu'il puisse rejeter
+un document qui n'est pas un pedigree, il a besoin d'exemples de documents non-pedigree.
+
+La classe `OTHER_DOC` remplit ce rôle. Elle est constituée d'images issues du dataset
+public **RVL-CDIP** (Ryerson Vision Lab Complex Document Information Processing),
+qui contient 400 000 scans de documents de bureau : factures, lettres, formulaires,
+articles, budgets, mémos, etc.
+
+```bash
+# Collecter 252 images OTHER_DOC depuis RVL-CDIP (streaming, ~quelques minutes)
+python scripts/collect_rvlcdip.py --limit 252
+```
+
+Sans cette classe, le modèle prédirait toujours un registre pedigree même face à
+un document quelconque — ce qui rendrait l'API inutilisable en production.
+
+> `OTHER_DOC` n'apparaît pas dans les réponses de l'API `/predict` : si le score
+> le plus élevé appartient à cette classe, l'API retourne une erreur de confiance
+> insuffisante plutôt qu'un faux registre.
 
 ## Prérequis
 
@@ -96,7 +119,7 @@ make check-data    # affiche le nombre d'images par classe
 curl -X POST http://localhost:5000/predict \
      -F "file=@mon_pedigree.jpg"
 
-# Réponse
+# Réponse — document reconnu
 {
   "status": "success",
   "predictions": [
@@ -104,6 +127,12 @@ curl -X POST http://localhost:5000/predict \
     {"country": "BEL_KMSH", "score": 7.2},
     {"country": "CHE_SCS",  "score": 3.1}
   ]
+}
+
+# Réponse — document non reconnu (score max = OTHER_DOC)
+{
+  "status": "error",
+  "message": "Confidence too low"
 }
 
 # Health check
@@ -136,6 +165,7 @@ make label   # → http://localhost:5001
 | `countries.json` | Source unique des pays et registres |
 | `requirements.txt` | Dépendances Python avec versions épinglées |
 | `scripts/countries.py` | Dérive la liste des classes depuis `countries.json` |
+| `scripts/collect_rvlcdip.py` | Collecte la classe négative OTHER_DOC depuis RVL-CDIP |
 
 ## Structure des données
 
@@ -143,7 +173,8 @@ make label   # → http://localhost:5001
 data/
 ├── inbox/          ← documents à labelliser (déposer ici)
 ├── raw/            ← dataset labellisé par classe
-│   ├── FRA_LOF/
+│   ├── FRA_LOF/    ← pedigrees Société Centrale Canine
+│   ├── OTHER_DOC/  ← documents non-pedigree (RVL-CDIP)
 │   ├── USA_AKC/
 │   └── ...
 ├── processed/      ← images normalisées (224×224 JPEG)

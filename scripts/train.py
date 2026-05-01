@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -48,15 +49,12 @@ def build_model(num_classes: int) -> tuple[tf.keras.Model, tf.keras.Model]:
 def _make_callbacks() -> list:
     return [
         callbacks.EarlyStopping(patience=5, restore_best_weights=True),
-        callbacks.ModelCheckpoint("models/best_pedigree_model.h5", save_best_only=True),
+        callbacks.ModelCheckpoint("models/best_pedigree_model.keras", save_best_only=True),
         callbacks.ReduceLROnPlateau(factor=0.5, patience=3, min_lr=1e-6),
     ]
 
 
 def train():
-    from countries import load_classes
-    classes = load_classes()
-
     train_ds = tf.keras.utils.image_dataset_from_directory(
         "data/raw", validation_split=0.2, subset="training", seed=SEED,
         image_size=IMG_SIZE, batch_size=BATCH_SIZE,
@@ -66,15 +64,25 @@ def train():
         image_size=IMG_SIZE, batch_size=BATCH_SIZE,
     )
 
+    num_classes = len(train_ds.class_names)
+    print(f"Classes détectées ({num_classes}) : {train_ds.class_names}")
+
+    # Sauvegarde des class_names pour que evaluate.py utilise le même mapping
+    os.makedirs("models", exist_ok=True)
+    with open("models/class_names.json", "w") as f:
+        json.dump(train_ds.class_names, f)
+    print("Class names sauvegardées → models/class_names.json")
+
     # Poids de classe pour compenser le déséquilibre du dataset
     labels = np.concatenate([y.numpy() for _, y in train_ds])
-    class_weights = compute_class_weight("balanced", classes=np.unique(labels), y=labels)
-    class_weight_dict = dict(enumerate(class_weights))
+    unique_labels = np.unique(labels)
+    class_weights = compute_class_weight("balanced", classes=unique_labels, y=labels)
+    class_weight_dict = dict(zip(unique_labels.tolist(), class_weights))
 
     train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
     val_ds   = val_ds.prefetch(tf.data.AUTOTUNE)
 
-    model, base_model = build_model(len(classes))
+    model, base_model = build_model(num_classes)
 
     # ------------------------------------------------------------------
     # Phase 1 — Feature extraction : tronc MobileNetV2 gelé, LR=1e-3
