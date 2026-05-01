@@ -108,7 +108,7 @@ make preprocess    # valide et redimensionne les images → data/processed/
 make train         # entraînement (2 phases : feature extraction + fine-tuning)
 make evaluate      # matrice de confusion + métriques → models/confusion_matrix.png
 
-make serve         # API de prédiction → http://localhost:5000
+make serve         # API de prédiction → http://localhost:5000 + interface UI
 make check-data    # affiche le nombre d'images par classe
 ```
 
