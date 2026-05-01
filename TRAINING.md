@@ -1,6 +1,6 @@
 # Workflow d'entraînement — `make train`
 
-Guide détaillé du pipeline d'entraînement avec TensorFlow/Keras.
+Guide détaillé du pipeline d'entraînement avec TensorFlow/Keras et MLflow.
 
 ---
 
@@ -18,11 +18,18 @@ class_weight_dict           ← poids pour compenser le déséquilibre
         ▼ build_model(num_classes)
 MobileNetV2 + tête custom   ← graphe Keras
         │
-        ▼ Phase 1 : feature extraction (15 epochs max, LR=1e-3)
-        │   tronc gelé, seule la tête s'entraîne
-        │
-        ▼ Phase 2 : fine-tuning (10 epochs max, LR=1e-5)
-        │   30 dernières couches dégelées
+        ▼ mlflow.start_run()  ←─────────────────────────────────┐
+        │                                                        │
+        ▼ Phase 1 : feature extraction (15 epochs max, LR=1e-3) │
+        │   tronc gelé, seule la tête s'entraîne                │
+        │   → log_metrics(phase1_*)                             │
+        │                                                        │
+        ▼ Phase 2 : fine-tuning (10 epochs max, LR=1e-5)        │
+        │   30 dernières couches dégelées                        │
+        │   → log_metrics(phase2_*, final_val_accuracy)         │
+        │                                                        │
+        ▼ log_artifacts(class_names.json, confusion_matrix.png) │
+        ▼ log_model(model)  ────────────────────────────────────┘
         │
         ▼ ModelCheckpoint
 models/best_pedigree_model.keras
@@ -55,27 +62,20 @@ val_ds = tf.keras.utils.image_dataset_from_directory(
 **Ce que fait cette fonction :**
 - Scanne `data/raw/` et détecte les sous-dossiers → une classe par dossier
 - Assigne des entiers dans l'**ordre alphabétique** des noms de dossiers
-  - ex : `FRA_LOF=0`, `OTHER_DOC=1` (si ce sont les seuls dossiers)
+  - ex : `FRA_LOF=0`, `OTHER_DOC=1`
 - Redimensionne toutes les images en 224×224 via bilinear interpolation
 - Retourne des batches `(images, labels)` où `images` ∈ `[0, 255]` float32
 
 **`validation_split=0.2` avec `seed=42` :**
-Avec le même `seed`, le split train/val est déterministe et reproductible.
-Les 20% de validation sont prélevés de façon stratifiée par dossier.
-
-**Accès aux noms de classes :**
-```python
-num_classes = len(train_ds.class_names)
-# train_ds.class_names → ["FRA_LOF", "OTHER_DOC"]
-```
+Split déterministe et reproductible. Les 20% de validation sont prélevés de façon
+stratifiée par dossier — le même seed garantit les mêmes images en train/val à chaque run.
 
 **Sauvegarde immédiate dans `class_names.json` :**
 ```python
 with open("models/class_names.json", "w") as f:
     json.dump(train_ds.class_names, f)
 ```
-Ce fichier est la référence pour `evaluate.py` et `api.py` — il garantit que l'indice 0
-correspond toujours à la même classe, même si le dataset évolue.
+Ce fichier est la référence pour `evaluate.py` et `api.py`.
 
 ---
 
@@ -100,11 +100,6 @@ Si FRA_LOF a 200 images et OTHER_DOC en a 100 :
 - `weight[OTHER_DOC]` = 300 / (2 × 100) = 1.50
 
 Le modèle pénalise davantage les erreurs sur la classe minoritaire.
-Passé à `model.fit(class_weight=class_weight_dict)`.
-
-**Pourquoi recalculer depuis les batches ?**
-`image_dataset_from_directory` ne donne pas directement accès aux labels bruts.
-La boucle `[y.numpy() for _, y in train_ds]` extrait tous les labels en one pass.
 
 ---
 
@@ -136,21 +131,20 @@ x = layers.RandomBrightness(0.10)(x)
 # Normalisation MobileNetV2 : [0,255] → [-1, 1]
 x = layers.Rescaling(1.0 / 127.5, offset=-1)(x)
 
-# Tronc MobileNetV2 (training=False en phase 1 → BatchNorm en mode inference)
+# Tronc MobileNetV2 (training=False → BatchNorm en mode inference)
 x = base_model(x, training=False)
 
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.Dropout(0.3)(x)
 
-# Sortie float32 pour stabilité numérique (mixed_float16 en vigueur)
+# float32 pour stabilité numérique (mixed_float16 en vigueur)
 outputs = layers.Dense(num_classes, activation="softmax", dtype="float32")(x)
 ```
 
 ### Data augmentation intégrée
 
-Les couches `Random*` sont des couches Keras standard, incluses dans le graphe.
-Elles s'activent automatiquement en `training=True` (pendant `fit`) et sont désactivées
-en `training=False` (pendant `predict` et `evaluate`).
+Les couches `Random*` s'activent automatiquement en `training=True` (pendant `fit`)
+et sont désactivées en `training=False` (pendant `predict` et `evaluate`).
 
 | Couche | Effet |
 |--------|-------|
@@ -159,9 +153,6 @@ en `training=False` (pendant `predict` et `evaluate`).
 | `RandomZoom(0.10)` | Zoom ±10% |
 | `RandomBrightness(0.10)` | Luminosité ±10% |
 
-Ces augmentations simulent la variabilité des scans (orientation légèrement de travers,
-luminosité du scanner différente, etc.).
-
 ### Rescaling — normalisation interne
 
 ```python
@@ -169,49 +160,69 @@ layers.Rescaling(1.0 / 127.5, offset=-1)
 ```
 
 Transforme les pixels entiers [0, 255] vers [-1, 1] (format attendu par MobileNetV2).
-Formule : `output = input × (1/127.5) + (-1)`
-
-**Cette couche fait partie du modèle sauvegardé.** À l'inférence, passer les pixels bruts
-(valeurs entières [0-255]). Ne jamais normaliser en dehors du modèle.
+**Cette couche fait partie du modèle sauvegardé.** À l'inférence, passer les pixels bruts.
 
 ### `training=False` sur le tronc en phase 1
 
-```python
-x = base_model(x, training=False)
-```
-
-Force les couches `BatchNormalization` de MobileNetV2 à utiliser leurs statistiques
-figées (moyennes/variances calculées sur ImageNet) même pendant l'entraînement.
-Avec `BATCH_SIZE=16` et `training=True`, les stats de batch seraient trop bruitées
-et déstabiliseraient l'entraînement.
+Force les `BatchNormalization` de MobileNetV2 à utiliser leurs statistiques figées (ImageNet).
+Avec `BATCH_SIZE=16` et `training=True`, les stats de batch seraient trop bruitées.
 
 ### `dtype="float32"` sur la Dense finale
 
-Avec `mixed_precision.set_global_policy('mixed_float16')`, toutes les couches utilisent
-float16 par défaut. Le softmax sur float16 peut provoquer des underflows/overflows.
-Forcer `float32` sur la couche de sortie garantit la stabilité numérique.
+Avec `mixed_float16`, toutes les couches utilisent float16 par défaut.
+Le softmax sur float16 peut provoquer des underflows. Forcer `float32` sur la sortie garantit la stabilité.
 
 ---
 
 ## 4. Mixed precision — optimisation mémoire GPU
 
 ```python
-from tensorflow.keras import mixed_precision
 mixed_precision.set_global_policy('mixed_float16')
 ```
 
-**Principe :**
-- Les calculs (multiplications matricielles) se font en **float16** → 2× moins de VRAM
-- Les gradients et les poids maîtres restent en **float32** → précision numérique préservée
-- Gain typique : réduit la VRAM de ~40-50%, permet d'augmenter le batch size
-
-**Avec une RTX 4060 Laptop (8 Go VRAM) :**
-Sans mixed precision, BATCH_SIZE=16 avec MobileNetV2 peut dépasser la VRAM disponible.
-Avec mixed precision, c'est confortable.
+- Les calculs se font en **float16** → ~50% moins de VRAM
+- Les gradients et poids maîtres restent en **float32** → précision préservée
+- Sur RTX 4060 Laptop (8 Go VRAM) : permet `BATCH_SIZE=16` confortablement
 
 ---
 
-## 5. Phase 1 — Feature extraction
+## 5. Tracking MLflow
+
+Chaque run est encapsulé dans un contexte `mlflow.start_run()`.
+
+```python
+mlflow.set_experiment("pedigree-classifier")
+with mlflow.start_run():
+    mlflow.log_params({...})   # avant l'entraînement
+
+    history1 = model.fit(...)  # phase 1
+    mlflow.log_metrics({
+        "phase1_best_val_accuracy": max(history1.history["val_accuracy"]),
+        "phase1_best_val_loss": min(history1.history["val_loss"]),
+        "phase1_epochs_run": len(history1.history["val_accuracy"]),
+    })
+
+    history2 = model.fit(...)  # phase 2
+    mlflow.log_metrics({
+        "phase2_best_val_accuracy": ...,
+        "final_val_accuracy": max(phase1_best, phase2_best),
+    })
+
+    mlflow.log_artifact("models/class_names.json")
+    mlflow.tensorflow.log_model(model, artifact_path="model")
+```
+
+**`phase1_epochs_run` / `phase2_epochs_run` :**
+`EarlyStopping` peut interrompre avant le nombre max d'epochs.
+Logger le nombre réel permet de détecter les runs qui convergent vite vs ceux qui n'ont pas assez d'epochs.
+
+**`final_val_accuracy` :**
+Prend le meilleur score des deux phases. Permet de trier les runs dans l'UI MLflow
+par une métrique unique indépendante du fait que la phase 2 améliore ou non la phase 1.
+
+---
+
+## 6. Phase 1 — Feature extraction
 
 ```python
 model.compile(
@@ -219,41 +230,27 @@ model.compile(
     loss="sparse_categorical_crossentropy",
     metrics=["accuracy"],
 )
-model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=15,
-    callbacks=_make_callbacks(),
+history1 = model.fit(
+    train_ds, validation_data=val_ds,
+    epochs=15, callbacks=_make_callbacks(),
     class_weight=class_weight_dict,
 )
 ```
 
-**Objectif :** Entraîner uniquement la tête de classification.
-Le tronc MobileNetV2 est gelé → ses poids ne changent pas.
-
 **`sparse_categorical_crossentropy` :**
 Utilisé quand les labels sont des entiers (0, 1, 2…) et non des vecteurs one-hot.
-`image_dataset_from_directory` retourne des labels entiers → ce loss est adapté.
+`image_dataset_from_directory` retourne des labels entiers.
 
 **`Adam(1e-3)` :**
-LR élevé acceptable en phase 1 car seule la petite tête s'entraîne,
-le risque de déstabiliser les poids pré-entraînés est nul (tronc gelé).
-
-**EarlyStopping(patience=5) :**
-Arrête l'entraînement si `val_accuracy` ne s'améliore pas pendant 5 epochs consécutives.
-`restore_best_weights=True` ramène le modèle à son meilleur état.
-
-**ReduceLROnPlateau(factor=0.5, patience=3) :**
-Divise le LR par 2 si `val_loss` ne diminue plus pendant 3 epochs.
-Aide à sortir des plateaux sans avoir à choisir manuellement un schedule.
+LR élevé acceptable : seule la petite tête s'entraîne, le tronc est gelé.
 
 ---
 
-## 6. Phase 2 — Fine-tuning
+## 7. Phase 2 — Fine-tuning
 
 ```python
 base_model.trainable = True
-for layer in base_model.layers[:-30]:   # FINE_TUNE_LAYERS = 30
+for layer in base_model.layers[:-30]:
     layer.trainable = False
 
 model.compile(
@@ -261,33 +258,26 @@ model.compile(
     loss="sparse_categorical_crossentropy",
     metrics=["accuracy"],
 )
-model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=10,
-    callbacks=_make_callbacks(),
-    class_weight=class_weight_dict,
-)
+history2 = model.fit(...)
 ```
-
-**Objectif :** Adapter les couches hautes de MobileNetV2 au domaine des pedigrees.
-Les couches basses (détection de bords, textures basiques) restent gelées —
-elles sont génériques et utiles pour tout type d'image.
-Les 30 dernières couches (features plus abstraites) sont dégelées pour apprendre
-les patterns spécifiques aux pedigrees.
-
-**`Adam(1e-5)` :**
-LR 100× plus faible qu'en phase 1. Indispensable : un LR trop élevé écraserait
-les poids pré-entraînés finement calibrés sur ImageNet.
 
 **Pourquoi `model.compile()` à nouveau ?**
 Après avoir modifié `trainable` sur des couches, il faut recompiler pour que
 TensorFlow recalcule le graphe de gradient. Sans recompilation, les paramètres
 dégelés ne seraient pas mis à jour.
 
+**`Adam(1e-5)` :**
+LR 100× plus faible qu'en phase 1. Indispensable pour ne pas écraser les poids
+pré-entraînés finement calibrés sur ImageNet.
+
+**Les 30 dernières couches seulement :**
+Les couches basses de MobileNetV2 (détection de bords, textures basiques) restent gelées.
+Elles sont génériques et utiles pour tout type d'image.
+Les couches hautes (features plus abstraites) sont adaptées au domaine des pedigrees.
+
 ---
 
-## 7. Callbacks
+## 8. Callbacks
 
 ```python
 def _make_callbacks():
@@ -298,38 +288,40 @@ def _make_callbacks():
     ]
 ```
 
-Les trois callbacks sont appliqués aux deux phases.
+Les callbacks sont **réinstanciés** pour chaque phase via `_make_callbacks()`.
+Si on réutilisait les mêmes instances, l'état interne de `EarlyStopping` (compteur de patience,
+meilleure valeur connue) serait hérité de la phase 1 → risque d'arrêt immédiat en phase 2.
 
 **`ModelCheckpoint(save_best_only=True)` :**
-Sauvegarde le modèle uniquement quand `val_accuracy` s'améliore.
-Format `.keras` (natif TF 2.x) — obligatoire avec `mixed_float16`.
-Le format `.h5` est incompatible et lève une erreur `cannot pickle 'module' object`.
+Format `.keras` obligatoire avec `mixed_float16`. Le format `.h5` est incompatible.
+
+**`ReduceLROnPlateau(factor=0.5, patience=3, min_lr=1e-6)` :**
+Divise le LR par 2 si `val_loss` ne diminue plus pendant 3 epochs.
+`min_lr=1e-6` empêche le LR de descendre en dessous d'un seuil inutilisable.
 
 ---
 
-## 8. Prefetch — optimisation de la pipeline de données
+## 9. Prefetch — optimisation de la pipeline de données
 
 ```python
 train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
 val_ds   = val_ds.prefetch(tf.data.AUTOTUNE)
 ```
 
-`prefetch` prépare le batch suivant pendant que le GPU traite le batch courant.
-`AUTOTUNE` laisse TensorFlow déterminer automatiquement le nombre de batches à précharger.
+Prépare le batch suivant pendant que le GPU traite le batch courant.
 Sans `prefetch`, le GPU attend le CPU entre chaque batch → sous-utilisation GPU.
+`AUTOTUNE` laisse TensorFlow déterminer automatiquement le nombre de batches à précharger.
 
 ---
 
-## 9. Évaluation — `make evaluate`
+## 10. Évaluation — `make evaluate`
 
 ```python
-# Chargement du test set (jamais vu pendant l'entraînement)
 val_ds = tf.keras.utils.image_dataset_from_directory(
     "data/test", image_size=(224, 224), batch_size=32
 )
-test_classes = val_ds.class_names   # ordre alphabétique de data/test/
+test_classes = val_ds.class_names
 
-# Mapping : indices test → noms → indices modèle
 with open("models/class_names.json") as f:
     model_classes = json.load(f)
 
@@ -338,51 +330,48 @@ for imgs, labels in val_ds:
     preds = model.predict(imgs, verbose=0)
     pred_indices = np.argmax(preds, axis=1)
     for label, pred_idx in zip(labels.numpy(), pred_indices):
-        y_true_names.append(test_classes[label])        # entier → nom
-        y_pred_names.append(model_classes[pred_idx])    # entier → nom
+        y_true_names.append(test_classes[label])
+        y_pred_names.append(model_classes[pred_idx])
 
-# Comparaison via noms de classes (robuste aux décalages d'indices)
 print(classification_report(y_true_names, y_pred_names, ...))
 ```
 
 **Pourquoi comparer via les noms plutôt que les indices ?**
 `data/test/` peut ne pas avoir exactement les mêmes dossiers que `data/raw/` au moment
 de l'entraînement. L'ordre alphabétique change → `FRA_LOF` peut être l'indice 0 dans
-le test set mais l'indice 4 dans le modèle. Passer par les noms de classes évite
-tout décalage silencieux.
+le test set mais l'indice 4 dans le modèle. Passer par les noms évite tout décalage silencieux.
 
 ---
 
-## 10. Résultats — run FRA_LOF
+## 11. Résultats — run FRA_LOF (mai 2026)
 
-Modèle entraîné sur FRA_LOF + OTHER_DOC (252 images chacune).
+Modèle binaire FRA_LOF vs OTHER_DOC (252 images chacune).
 
-```
-Phase 1 (feature extraction) :
-  val_accuracy ≈ 95-100% après 3-5 epochs
-  EarlyStopping déclenché rapidement (tâche binaire simple)
+| Métrique MLflow | Valeur |
+|----------------|--------|
+| `phase1_best_val_accuracy` | ~1.00 |
+| `phase1_epochs_run` | 3–5 (EarlyStopping) |
+| `phase2_best_val_accuracy` | ~1.00 |
+| `final_val_accuracy` | 1.00 |
 
-Phase 2 (fine-tuning) :
-  val_accuracy maintenu, val_loss légèrement réduite
-```
-
-**Classification report :**
+**Classification report sur `data/test/` :**
 ```
               precision    recall  f1-score   support
-     FRA_LOF       1.00      1.00      1.00        50
-   OTHER_DOC       1.00      1.00      1.00        50
-    accuracy                           1.00       100
+     FRA_LOF       1.00      1.00      1.00        ~50
+   OTHER_DOC       1.00      1.00      1.00        ~50
+    accuracy                           1.00       ~100
 ```
 
 100% sur le test set avec seulement 252 images par classe.
-MobileNetV2 pré-entraîné est très efficace en few-shot pour les tâches binaires visuellement distinctes.
+MobileNetV2 pré-entraîné est très efficace en few-shot pour les tâches binaires
+où les deux classes sont visuellement très distinctes.
 
 ---
 
-## Prochaines étapes pour étendre à d'autres registres
+## 12. Prochaines étapes pour étendre à d'autres registres
 
-1. Collecter des images pour les autres classes (`GBR_KC`, `DEU_VDH`, etc.)
-2. Atteindre ~200-300 images par classe
-3. Relancer `make preprocess && make split && make train`
-4. `class_names.json` sera mis à jour automatiquement
+1. Collecter des images pour `GBR_KC`, `DEU_VDH`, `USA_AKC`, etc. (200–300 images/classe)
+2. Relancer `make preprocess && make split && make train`
+3. `class_names.json` sera mis à jour automatiquement
+4. MLflow permettra de comparer le nouveau run multi-classes avec le run binaire
 5. `OTHER_DOC` reste présent pour la robustesse en production

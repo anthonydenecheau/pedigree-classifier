@@ -93,17 +93,26 @@ api.py            →  POST /predict  (Gunicorn 2 workers, :5000)
 - ✅ Guard si le modèle est absent
 
 ### `api.py`
-- ✅ Validation MIME (jpeg/png/webp uniquement)
+- ✅ Validation par extension (jpeg/png/webp) — plus robuste que MIME type
 - ✅ Limite upload 10 Mo (`MAX_CONTENT_LENGTH`)
 - ✅ `try/except` ciblé sur ouverture image et inférence
 - ✅ Logging de chaque prédiction
 - ✅ Endpoint `/health`
 - ✅ Seuil configurable via `PREDICT_THRESHOLD` (variable d'environnement)
+- ✅ Chargement lazy du modèle (`_get_model()`) — évite `CUDA_ERROR_NOT_INITIALIZED` avec Gunicorn
+- ✅ Gunicorn `-w 1` sans `--preload` — contournement du problème de fork CUDA
+- ✅ Interface web drag & drop (`GET /` → `templates/index.html`)
+- ✅ Suppression double normalisation — modèle contient `Rescaling` interne
 
 ### Fichiers créés
 - ✅ `scripts/preprocess.py` — valide + redimensionne raw → processed
 - ✅ `scripts/split_test_set.py` — crée `data/test/` (une seule fois, avant le premier train)
-- ✅ `requirements.txt` — 12 dépendances avec versions épinglées
+- ✅ `scripts/collect_rvlcdip.py` — collecte la classe négative OTHER_DOC depuis RVL-CDIP
+- ✅ `scripts/templates/index.html` — interface web drag & drop
+- ✅ `requirements.txt` — 16 dépendances avec versions épinglées
+- ✅ `GPU_REQUIREMENTS.md` — documentation setup CUDA
+- ✅ `CLAUDE.md` — documentation technique complète du projet
+- ✅ `TRAINING.md` — guide détaillé du workflow make train
 
 ---
 
@@ -193,15 +202,16 @@ avec avertissement explicite. Métriques produites :
 
 ```bash
 make serve
-# → gunicorn -w 2 -b 0.0.0.0:5000 --preload scripts.api:app
+# → gunicorn -w 1 -b 0.0.0.0:5000 scripts.api:app
 ```
 
-- `--preload` : le modèle est chargé **une seule fois** dans le process parent,
-  puis partagé en mémoire par les 2 workers (copy-on-write). Évite de charger
-  2× un modèle de plusieurs Go.
-- 2 workers : 2 requêtes simultanées sans contention GPU.
+- **`-w 1` sans `--preload`** : `--preload` chargeait le modèle TF dans le processus maître
+  avant le fork, ce qui rendait le contexte CUDA invalide dans les workers
+  (`CUDA_ERROR_NOT_INITIALIZED`). Le chargement lazy via `_get_model()` initialise le modèle
+  dans le worker après le fork.
 - `PREDICT_THRESHOLD` configurable via variable d'environnement :
   `PREDICT_THRESHOLD=65 make serve`
+- Interface web drag & drop accessible sur `GET /` (template `index.html`)
 
 ---
 
@@ -343,10 +353,13 @@ docker run -p 5000:5000 -e PREDICT_THRESHOLD=60 pedigree-api
 
 | Semaine | Priorité | Action | Statut |
 |---------|----------|--------|--------|
-| S1 | 🔴 Bloquant | Acquérir 300-500 images/classe | ⏳ En attente |
+| S1 | 🔴 Bloquant | Acquérir 300-500 images/classe (autres registres) | ⏳ En attente |
 | S1 | 🔴 Bloquant | `dvc init` + versionner `data/raw` | ⏳ En attente |
 | S1 | ✅ Fait | Créer le test set figé (`data/test/`) | ✅ |
-| S2 | 🟠 Majeur | Intégrer MLflow dans `train.py` | ⏳ En attente |
+| S1 | ✅ Fait | Classe négative OTHER_DOC (RVL-CDIP, 252 images) | ✅ |
+| S1 | ✅ Fait | Import pedigrees FRA_LOF (252 images, PDFs → JPEG) | ✅ |
+| S2 | ✅ Fait | Intégrer MLflow dans `train.py` (`make mlflow`) | ✅ |
+| S2 | ✅ Fait | Interface web drag & drop (`make serve`) | ✅ |
 | S2 | 🟠 Majeur | Écrire les tests unitaires (api + preprocess) | ⏳ En attente |
 | S3 | 🟡 Moyen | Jenkinsfile (lint → test → train → evaluate) | ⏳ En attente |
 | S4 | ✅ Fait | Gunicorn en production (`make serve`) | ✅ |

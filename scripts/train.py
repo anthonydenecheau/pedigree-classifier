@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import mlflow
+import mlflow.tensorflow
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks, mixed_precision
@@ -54,6 +56,10 @@ def _make_callbacks() -> list:
     ]
 
 
+def _best_metric(history, key: str) -> float:
+    return float(max(history.history[key]))
+
+
 def train():
     train_ds = tf.keras.utils.image_dataset_from_directory(
         "data/raw", validation_split=0.2, subset="training", seed=SEED,
@@ -64,13 +70,14 @@ def train():
         image_size=IMG_SIZE, batch_size=BATCH_SIZE,
     )
 
-    num_classes = len(train_ds.class_names)
-    print(f"Classes détectées ({num_classes}) : {train_ds.class_names}")
+    class_names = train_ds.class_names
+    num_classes = len(class_names)
+    print(f"Classes détectées ({num_classes}) : {class_names}")
 
     # Sauvegarde des class_names pour que evaluate.py utilise le même mapping
     os.makedirs("models", exist_ok=True)
     with open("models/class_names.json", "w") as f:
-        json.dump(train_ds.class_names, f)
+        json.dump(class_names, f)
     print("Class names sauvegardées → models/class_names.json")
 
     # Poids de classe pour compenser le déséquilibre du dataset
@@ -84,43 +91,77 @@ def train():
 
     model, base_model = build_model(num_classes)
 
-    # ------------------------------------------------------------------
-    # Phase 1 — Feature extraction : tronc MobileNetV2 gelé, LR=1e-3
-    # ------------------------------------------------------------------
-    print(f"Phase 1 : feature extraction ({EPOCHS_PHASE1} epochs max, LR=1e-3)...")
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-3),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-    model.fit(
-        train_ds, validation_data=val_ds,
-        epochs=EPOCHS_PHASE1, callbacks=_make_callbacks(),
-        class_weight=class_weight_dict,
-    )
+    mlflow.set_experiment("pedigree-classifier")
+    with mlflow.start_run():
+        mlflow.log_params({
+            "seed": SEED,
+            "batch_size": BATCH_SIZE,
+            "img_size": IMG_SIZE[0],
+            "base_model": "MobileNetV2",
+            "fine_tune_layers": FINE_TUNE_LAYERS,
+            "epochs_phase1": EPOCHS_PHASE1,
+            "epochs_phase2": EPOCHS_PHASE2,
+            "num_classes": num_classes,
+            "classes": ",".join(class_names),
+        })
 
-    # ------------------------------------------------------------------
-    # Phase 2 — Fine-tuning : dégel des FINE_TUNE_LAYERS dernières couches
-    # Les couches inférieures (features bas niveau) restent gelées.
-    # LR très bas pour ne pas détruire les poids pré-entraînés.
-    # BatchNorm en mode inference (training=True en appel de couche serait
-    # instable avec BATCH_SIZE=16 ; on garde les stats ImageNet).
-    # ------------------------------------------------------------------
-    print(f"Phase 2 : fine-tuning des {FINE_TUNE_LAYERS} dernières couches (LR=1e-5)...")
-    base_model.trainable = True
-    for layer in base_model.layers[:-FINE_TUNE_LAYERS]:
-        layer.trainable = False
+        # ------------------------------------------------------------------
+        # Phase 1 — Feature extraction : tronc MobileNetV2 gelé, LR=1e-3
+        # ------------------------------------------------------------------
+        print(f"Phase 1 : feature extraction ({EPOCHS_PHASE1} epochs max, LR=1e-3)...")
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        history1 = model.fit(
+            train_ds, validation_data=val_ds,
+            epochs=EPOCHS_PHASE1, callbacks=_make_callbacks(),
+            class_weight=class_weight_dict,
+        )
+        mlflow.log_metrics({
+            "phase1_best_val_accuracy": _best_metric(history1, "val_accuracy"),
+            "phase1_best_val_loss": float(min(history1.history["val_loss"])),
+            "phase1_epochs_run": len(history1.history["val_accuracy"]),
+        })
 
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-5),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-    model.fit(
-        train_ds, validation_data=val_ds,
-        epochs=EPOCHS_PHASE2, callbacks=_make_callbacks(),
-        class_weight=class_weight_dict,
-    )
+        # ------------------------------------------------------------------
+        # Phase 2 — Fine-tuning : dégel des FINE_TUNE_LAYERS dernières couches
+        # Les couches inférieures (features bas niveau) restent gelées.
+        # LR très bas pour ne pas détruire les poids pré-entraînés.
+        # BatchNorm en mode inference (training=True en appel de couche serait
+        # instable avec BATCH_SIZE=16 ; on garde les stats ImageNet).
+        # ------------------------------------------------------------------
+        print(f"Phase 2 : fine-tuning des {FINE_TUNE_LAYERS} dernières couches (LR=1e-5)...")
+        base_model.trainable = True
+        for layer in base_model.layers[:-FINE_TUNE_LAYERS]:
+            layer.trainable = False
+
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(1e-5),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        history2 = model.fit(
+            train_ds, validation_data=val_ds,
+            epochs=EPOCHS_PHASE2, callbacks=_make_callbacks(),
+            class_weight=class_weight_dict,
+        )
+        mlflow.log_metrics({
+            "phase2_best_val_accuracy": _best_metric(history2, "val_accuracy"),
+            "phase2_best_val_loss": float(min(history2.history["val_loss"])),
+            "phase2_epochs_run": len(history2.history["val_accuracy"]),
+            "final_val_accuracy": max(
+                _best_metric(history1, "val_accuracy"),
+                _best_metric(history2, "val_accuracy"),
+            ),
+        })
+
+        # Artefacts
+        if os.path.exists("models/confusion_matrix.png"):
+            mlflow.log_artifact("models/confusion_matrix.png")
+        mlflow.log_artifact("models/class_names.json")
+        mlflow.tensorflow.log_model(model, artifact_path="model")
 
     print("Entraînement terminé.")
 

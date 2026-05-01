@@ -4,7 +4,7 @@ PIP=$(VENV)/bin/pip
 CONFIG=countries.json
 MODEL=models/best_pedigree_model.keras
 
-.PHONY: all init collect collect-reset preprocess split train evaluate serve label clean clean-venv reinstall check-data
+.PHONY: all init collect collect-reset preprocess split train evaluate serve mlflow label clean clean-venv reinstall check-data
 
 all: init install collect preprocess train evaluate
 
@@ -55,6 +55,9 @@ evaluate:
 
 serve:
 	$(VENV)/bin/gunicorn -w 1 -b 0.0.0.0:5000 scripts.api:app
+
+mlflow:
+	$(VENV)/bin/mlflow ui --port 5001
 
 # Interface de labellisation manuelle (http://localhost:5001)
 label:
