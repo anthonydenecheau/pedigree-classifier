@@ -4,9 +4,9 @@ PIP=$(VENV)/bin/pip
 CONFIG=countries.json
 MODEL=models/best_pedigree_model.keras
 
-.PHONY: all init collect collect-reset preprocess split train evaluate serve mlflow label clean clean-venv reinstall check-data
+.PHONY: all init collect-negative preprocess split train evaluate serve mlflow label clean clean-venv reinstall check-data
 
-all: init install collect preprocess train evaluate
+all: init install collect-negative preprocess train evaluate
 
 init-venv:
 	python3 -m venv $(VENV)
@@ -20,11 +20,9 @@ install: init-venv
 init:
 	$(PYTHON) scripts/init_project.py
 
-collect:
-	$(PYTHON) scripts/collect_data.py --limit 300
-
-collect-reset:
-	$(PYTHON) scripts/collect_data.py --reset
+# Collecte la classe négative OTHER_DOC depuis RVL-CDIP (HuggingFace streaming)
+collect-negative:
+	$(PYTHON) scripts/collect_rvlcdip.py --limit 300
 
 # Vérifie le nombre d'images par dossier avant de lancer l'entraînement
 check-data:

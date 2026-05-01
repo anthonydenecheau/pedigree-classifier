@@ -39,7 +39,7 @@ pedigree/
     ├── evaluate.py
     ├── api.py
     ├── preprocess.py
-    ├── collect_rvlcdip.py
+    ├── collect_rvlcdip.py  ← classe négative OTHER_DOC (make collect-negative)
     ├── init_project.py
     ├── split_test_set.py
     ├── label.py
@@ -57,6 +57,7 @@ pedigree/
 | `make install` | Crée le venv et installe les dépendances | — |
 | `make reinstall` | Supprime le venv et réinstalle | — |
 | `make init` | Crée l'arborescence `data/raw/{classe}/` | — |
+| `make collect-negative` | Télécharge ~300 images RVL-CDIP → `data/raw/OTHER_DOC/` | — |
 | `make preprocess` | Valide et redimensionne les images → `data/processed/` | — |
 | `make split` | Crée `data/test/` (une seule fois avant le premier train) | — |
 | `make train` | Entraînement 2 phases MobileNetV2 + tracking MLflow | — |
@@ -90,18 +91,20 @@ Si la prédiction top-1 est `OTHER_DOC`, l'API retourne `status: uncertain` (pas
 python scripts/collect_rvlcdip.py --limit 252
 ```
 
-### Import des pedigrees FRA_LOF
+### Import des pedigrees (tous registres)
 
-Les PDFs sont livrés en ZIP depuis `/home/anthony/projects/DATASET_PEDIGREE/`.
+Les PDFs sont livrés en ZIP dans `/home/anthony/projects/DATASET_PEDIGREE/`.
 Le script `import.sh` dans ce dossier :
-1. Détecte les ZIPs non en cours de copie (`lsof`)
+1. Détecte les ZIPs non en cours de copie (`lsof` — évite les fichiers en transfert Tailscale)
 2. Dézippe, extrait la **page 2** du PDF en JPEG (dpi=200, via `pdf2image`)
-3. Sauvegarde dans `data/raw/FRA_LOF/`
+3. Sauvegarde dans `data/raw/{PAYS_REGISTRE}/` (ex : `data/raw/FRA_LOF/`)
 4. Supprime le ZIP si succès
 
 ```bash
 cd /home/anthony/projects/DATASET_PEDIGREE && bash import.sh
 ```
+
+Un script `monitor.sh` dans le même dossier surveille les copies en cours (refresh 5s).
 
 ---
 

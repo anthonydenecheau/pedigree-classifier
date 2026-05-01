@@ -57,23 +57,11 @@ api.py            →  POST /predict  (Gunicorn 2 workers, :5000)
 | Pas de métriques (F1, recall, precision) | ✅ Corrigé |
 | `plt.show()` incompatible headless/CI | ✅ Corrigé |
 | API sans validation, sans logging, sans auth | ✅ Corrigé |
-| `collect_data.py` : `except` bare, mono-thread, sélecteur fragile | ✅ Corrigé |
+| Dataset : scraping web remplacé par import manuel de PDFs + RVL-CDIP | ✅ Supprimé |
 
 ---
 
 ## 2. QUICK WINS — Appliqués
-
-### `collect_data.py`
-- ✅ `User-Agent` navigateur réel → évite la détection bot
-- ✅ Retry avec back-off exponentiel (3 tentatives / URL)
-- ✅ `ThreadPoolExecutor(max_workers=10)` → téléchargements parallèles
-- ✅ Validation PIL (format + intégrité) avant sauvegarde
-- ✅ 4 sélecteurs CSS Bing en cascade → résistance aux changements DOM
-- ✅ Requêtes définies pour les 9 classes
-- ✅ Reprise idempotente (skip si quota déjà atteint)
-- ✅ Logging structuré (`logging` au lieu de `print`)
-- ✅ 4 sources : registres officiels, Flickr CC, Bing, DuckDuckGo
-- ✅ Limite cible : 300 images/classe
 
 ### `train.py`
 - ✅ `SEED = 42` sur TensorFlow + NumPy → reproductibilité
@@ -118,49 +106,29 @@ api.py            →  POST /predict  (Gunicorn 2 workers, :5000)
 
 ## 3. REFACTORING — Implémenté
 
-### 3.1 `collect_data.py` — documents pedigree, multi-sources ✅
+### 3.1 Import du dataset — `import.sh` ✅
 
-**Problème corrigé** : les requêtes génériques remontaient des photos de chiens.
-Les requêtes sont maintenant ciblées sur les **certificats et documents officiels**
-(termes : "certificat scan", "Ahnentafel Dokument", "registration certificate", filetype:pdf…).
-
-Support PDF : les PDFs des registres officiels sont téléchargés et convertis
-page par page en JPEG via `pdf2image` (nécessite `poppler-utils`).
+Le dataset est fourni manuellement sous forme de ZIPs contenant des PDFs pedigree.
+Le script `import.sh` (dans `/home/anthony/projects/DATASET_PEDIGREE/`) gère l'import :
 
 ```
-collect_urls(class_name)
-  ├── _scrape_registry()    → PDF + images de docs sur sites officiels
-  ├── _scrape_flickr()      → scans de certificats CC partagés par éleveurs
-  ├── _scrape_bing()        → requêtes "certificat scan" / "filetype:pdf"
-  └── _scrape_duckduckgo()  → pool complémentaire
+ZIPs copiés depuis Windows (Tailscale)
           │
-          ▼
-      _dedup()              → déduplication cross-sources
-          │
-          ▼
-  ThreadPoolExecutor(8)     → téléchargements parallèles
-          │
-          ▼
-  _is_pdf() → _pdf_to_images()   → conversion pages PDF → JPEG (dpi=200)
-  _is_valid_image()              → PIL verify() + whitelist JPEG/PNG/WEBP
-          │
-          ▼
-  PIL convert("RGB") .save()     → normalisation format sortie
+          ▼ lsof → skip si copie en cours
+          ▼ unzip
+          ▼ pdf2image → page 2 extraite en JPEG (dpi=200)
+          ▼ sauvegarde dans data/raw/{PAYS_REGISTRE}/
+          ▼ suppression du ZIP si succès
 ```
 
-Arguments CLI :
 ```bash
-make collect                          # collecte normale (300 images/classe)
-make collect-reset                    # reset data/raw/ puis collecte
-python scripts/collect_data.py --reset --class EUROPE_FRANCE_SCC --limit 100
+cd /home/anthony/projects/DATASET_PEDIGREE && bash import.sh
 ```
 
-Prérequis système pour le support PDF :
+Prérequis :
 ```bash
-sudo apt install poppler-utils        # requis par pdf2image
+sudo apt install poppler-utils   # requis par pdf2image
 ```
-
-> Alternative si le scraping reste insuffisant : SerpAPI (payant, stable, zéro sélecteur à maintenir).
 
 ### 3.2 `train.py` — deux phases ✅
 
@@ -185,7 +153,7 @@ Points techniques :
 
 Workflow :
 ```
-make collect → [tri manuel] → make split  (une seule fois)
+[import manuel] → make collect-negative → [tri via make label] → make split  (une seule fois)
                                    │
                                    ▼
                              data/test/  ← figé, jamais touché par train.py

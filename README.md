@@ -12,8 +12,8 @@ countries.json
 init_project.py   →  data/raw/{classe}/   (arborescence par registre)
      │
      ▼
-collect_data.py   →  scraping multi-sources : registres officiels, Flickr CC, Bing, DuckDuckGo
-collect_rvlcdip.py → téléchargement RVL-CDIP (classe négative OTHER_DOC)
+[Import manuel]   →  data/raw/{PAYS_REGISTRE}/   (PDFs → JPEG via import.sh)
+collect_rvlcdip.py → data/raw/OTHER_DOC/         (classe négative, RVL-CDIP)
      │
      ▼  [Labellisation manuelle via make label]
      │
@@ -77,7 +77,7 @@ un document quelconque — ce qui rendrait l'API inutilisable en production.
 
 - Python 3.12+
 - NVIDIA GPU — 8 Go VRAM minimum (entraînement)
-- `poppler-utils` pour la conversion PDF :
+- `poppler-utils` pour la conversion PDF (utilisé par `import.sh`) :
   ```bash
   sudo apt install poppler-utils
   ```
@@ -94,24 +94,27 @@ make reinstall   # supprime le venv existant et réinstalle
 ## Pipeline complet
 
 ```bash
-make init          # crée l'arborescence data/raw/{classe}/
+make init              # crée l'arborescence data/raw/{classe}/
 
-make collect       # collecte des documents (300 images/classe)
-make collect-reset # vide data/raw/ sans relancer la collecte
+# Alimentation du dataset (deux sources)
+# 1. Pedigrees : importer les PDFs via import.sh dans DATASET_PEDIGREE/
+#    → extrait la page 2 en JPEG dans data/raw/{PAYS_REGISTRE}/
+# 2. Classe négative OTHER_DOC :
+make collect-negative  # télécharge ~300 images RVL-CDIP → data/raw/OTHER_DOC/
 
-make label         # interface de labellisation → http://localhost:5001
-                   # déposer les documents dans data/inbox/ avant de lancer
+make label             # interface de labellisation → http://localhost:5001
+                       # déposer les documents dans data/inbox/ avant de lancer
 
-make split         # crée data/test/ (une seule fois, avant le premier train)
-make preprocess    # valide et redimensionne les images → data/processed/
+make split             # crée data/test/ (une seule fois, avant le premier train)
+make preprocess        # valide et redimensionne les images → data/processed/
 
-make train         # entraînement + tracking MLflow automatique
-make evaluate      # matrice de confusion + métriques → models/confusion_matrix.png
+make train             # entraînement + tracking MLflow automatique
+make evaluate          # matrice de confusion + métriques → models/confusion_matrix.png
 
-make serve         # API de prédiction → http://localhost:5000 + interface UI
-make mlflow        # tableau de bord des expériences → http://localhost:5001
+make serve             # API de prédiction → http://localhost:5000 + interface UI
+make mlflow            # tableau de bord des expériences → http://localhost:5001
 
-make check-data    # affiche le nombre d'images par classe
+make check-data        # affiche le nombre d'images par classe
 ```
 
 ## API
@@ -178,6 +181,7 @@ make label   # → http://localhost:5001
 | `scripts/countries.py` | Dérive la liste des classes depuis `countries.json` |
 | `scripts/collect_rvlcdip.py` | Collecte la classe négative OTHER_DOC depuis RVL-CDIP |
 | `GPU_REQUIREMENTS.md` | Setup CUDA / tensorflow[and-cuda] |
+| `/home/anthony/projects/DATASET_PEDIGREE/import.sh` | Import des PDFs pedigree → JPEG |
 
 ## Structure des données
 
